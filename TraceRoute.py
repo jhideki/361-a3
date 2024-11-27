@@ -33,6 +33,7 @@ def parse_ip_header(data):
     dst_ip = socket.inet_ntoa(ip_header[9])
     frag_offset = (flags_offset & 0x1FFF) * 8
     mf_flag = (flags_offset & 0x2000) >> 13
+    identification = ip_header[3]  # IP packet identification field
 
     return {
         "ihl": ihl,
@@ -42,6 +43,7 @@ def parse_ip_header(data):
         "dst_ip": dst_ip,
         "frag_offset": frag_offset,
         "mf_flag": mf_flag,
+        "id": identification,
     }
 
 
@@ -70,6 +72,41 @@ def parse_udp_packet(data):
     }
 
 
+def parse_icmp(data):
+    icmp_header = struct.unpack("!BBH4s", data[:8])
+    icmp_type = icmp_header[0]
+    icmp_code = icmp_header[1]
+    icmp_checksum = icmp_header[2]
+    rest_of_icmp = data[8:]
+
+    embedded_ip_header = struct.unpack("!BBHHHBBH4s4s", rest_of_icmp[:20])
+    embedded_ip_id = embedded_ip_header[3]
+    embedded_ip_src = socket.inet_ntoa(embedded_ip_header[8])
+    embedded_ip_dst = socket.inet_ntoa(embedded_ip_header[9])
+
+    udp_data_offset = 20
+    udp_header = struct.unpack(
+        "!HHHH", rest_of_icmp[udp_data_offset : udp_data_offset + 8]
+    )
+    udp_src_port = udp_header[0]
+    udp_dst_port = udp_header[1]
+    udp_length = udp_header[2]
+    udp_checksum = udp_header[3]
+
+    return {
+        "type": icmp_type,
+        "code": icmp_code,
+        "checksum": icmp_checksum,
+        "id": embedded_ip_id,
+        "src_ip": embedded_ip_src,
+        "dst_ip": embedded_ip_dst,
+        "src_port": udp_src_port,
+        "dst_port": udp_dst_port,
+        "length": udp_length,
+        "checksum": udp_checksum,
+    }
+
+
 def analyze_traceroute(pcap_file):
     packets = parse_pcap(pcap_file)
 
@@ -79,9 +116,11 @@ def analyze_traceroute(pcap_file):
     protocol_set = set()
     fragment_offsets = []
     rtt_data = defaultdict(list)
+    udp_packets = []
+    icmp_packets = []
+    routers = []
 
     for ts_sec, ts_usec, packet_data in packets:
-        # Ethernet header is 14 bytes; skip it
         ip_data = packet_data[14:]
         ip_header = parse_ip_header(ip_data)
         proto = ip_header["protocol"]
@@ -96,24 +135,38 @@ def analyze_traceroute(pcap_file):
                     source_ip = ip_header["src_ip"]
                 if dest_ip is None:
                     dest_ip = ip_header["dst_ip"]
+                udp_packets.append(
+                    {
+                        "ip": ip_header["src_ip"],
+                        "src_port": udp_data["src_port"],
+                        "id": ip_header["id"],
+                        "time": ts_sec + ts_usec / 1e6,
+                    }
+                )
         elif proto == 1:
+            icmp_data = parse_icmp(packet_data[14 + ip_header["ihl"] :])
             if (
                 ip_header["src_ip"] not in intermediate_ips
                 and ip_header["src_ip"] != source_ip
                 and ip_header["src_ip"] != dest_ip
             ):
                 intermediate_ips.add(ip_header["src_ip"])
+
+                icmp_packets.append(
+                    {
+                        "ip": icmp_data["src_ip"],
+                        "src_port": icmp_data["src_port"],
+                        "id": icmp_data["id"],
+                        "time": ts_sec + ts_usec / 1e6,
+                    }
+                )
         else:
             continue
-
-        if source_ip is None:
-            source_ip = ip_header["src_ip"]
-        if dest_ip is None:
-            ultimate_destination_ip = ip_header["dst_ip"]
 
         protocol_set.add(ip_header["protocol"])
 
         if ip_header["frag_offset"] > 0 or ip_header["mf_flag"] == 1:
+            print("test")
             fragment_offsets.append(ip_header["frag_offset"])
 
         # Simulate RTT using timestamps
