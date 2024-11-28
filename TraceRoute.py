@@ -115,10 +115,9 @@ def analyze_traceroute(pcap_file):
     intermediate_ips = set()
     protocol_set = set()
     fragment_offsets = []
-    rtt_data = defaultdict(list)
     udp_packets = []
     icmp_packets = []
-    routers = []
+    routers = dict()
 
     for ts_sec, ts_usec, packet_data in packets:
         ip_data = packet_data[14:]
@@ -151,10 +150,13 @@ def analyze_traceroute(pcap_file):
                 and ip_header["src_ip"] != dest_ip
             ):
                 intermediate_ips.add(ip_header["src_ip"])
+                routers[ip_header["src_ip"]] = {
+                    "rtt": [],
+                }
 
                 icmp_packets.append(
                     {
-                        "ip": icmp_data["src_ip"],
+                        "ip": ip_header["src_ip"],
                         "src_port": icmp_data["src_port"],
                         "id": icmp_data["id"],
                         "time": ts_sec + ts_usec / 1e6,
@@ -169,13 +171,15 @@ def analyze_traceroute(pcap_file):
             print("test")
             fragment_offsets.append(ip_header["frag_offset"])
 
-        # Simulate RTT using timestamps
-        rtt_key = (
-            "ultimate"
-            if ip_header["dst_ip"] == dest_ip
-            else f"router-{ip_header['dst_ip']}"
-        )
-        rtt_data[rtt_key].append(ts_sec + ts_usec / 1e6)
+    for udp in udp_packets:
+        for icmp in icmp_packets:
+            if (udp["id"] == icmp["id"] and udp["id"] != 0) or (
+                udp["src_port"] == icmp["src_port"] and udp["src_port"] != 0
+            ):
+                if icmp["ip"] in routers:
+                    diff = icmp["time"] - udp["time"]
+                    print("-------dbug diff: ", diff)
+                    routers[icmp["ip"]]["rtt"].append(diff)
 
     print(f"The IP address of the source node: {source_ip}")
     print(f"The IP address of ultimate destination node: {dest_ip}")
@@ -195,16 +199,14 @@ def analyze_traceroute(pcap_file):
     print(f"The offset of the last fragment is: {last_fragment_offset}")
 
     print("\nRTT statistics:")
-    for key, times in rtt_data.items():
-        if len(times) > 1:
-            diffs = [times[i + 1] - times[i] for i in range(len(times) - 1)]
-            avg_rtt = statistics.mean(diffs)
-            std_rtt = statistics.stdev(diffs)
-            print(
-                f"The avg RTT to {key} is: {avg_rtt:.2f} ms, the s.d. is: {std_rtt:.2f} ms"
-            )
-        else:
-            print(f"The avg RTT to {key} is: N/A, the s.d. is: N/A")
+    for ip, router in routers.items():
+        print(router)
+        router["avg"] = statistics.mean(router["rtt"])
+        router["std"] = statistics.stdev(router["rtt"])
+    for router in routers:
+        print(
+            f"The avg RTT to {router["ip"]} is: {router["avg"]:.2f} ms, the s.d. is: {router["std"]:.2f} ms"
+        )
 
 
 # Run the program
