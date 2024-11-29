@@ -1,16 +1,15 @@
 import struct
 import socket
-from collections import defaultdict
 import statistics
 
 
 def parse_pcap(file_path):
     with open(file_path, "rb") as f:
-        pcap_global_header = f.read(24)  # Skip global header
+        pcap_global_header = f.read(24)
 
         packets = []
         while True:
-            packet_header = f.read(16)  # Read the packet header
+            packet_header = f.read(16)
             if not packet_header:
                 break
 
@@ -25,7 +24,7 @@ def parse_ip_header(data):
     ip_header = struct.unpack("!BBHHHBBH4s4s", data[:20])
     version_ihl = ip_header[0]
     version = version_ihl >> 4
-    ihl = (version_ihl & 0xF) * 4  # Header length in bytes
+    ihl = (version_ihl & 0xF) * 4
     total_length = ip_header[2]
     flags_offset = ip_header[4]
     protocol = ip_header[6]
@@ -33,7 +32,7 @@ def parse_ip_header(data):
     dst_ip = socket.inet_ntoa(ip_header[9])
     frag_offset = (flags_offset & 0x1FFF) * 8
     mf_flag = (flags_offset & 0x2000) >> 13
-    identification = ip_header[3]  # IP packet identification field
+    identification = ip_header[3]
 
     return {
         "ihl": ihl,
@@ -48,19 +47,17 @@ def parse_ip_header(data):
 
 
 def parse_udp_packet(data):
-    UDP_HEADER_LENGTH = 8  # UDP header is always 8 bytes long
+    UDP_HEADER_LENGTH = 8
 
     if len(data) < UDP_HEADER_LENGTH:
         raise ValueError("Data is too short to contain a valid UDP header")
 
-    # Unpack UDP header fields
     udp_header = struct.unpack("!HHHH", data[:UDP_HEADER_LENGTH])
     src_port = udp_header[0]
     dst_port = udp_header[1]
     length = udp_header[2]
     checksum = udp_header[3]
 
-    # Extract UDP payload
     udp_payload = data[UDP_HEADER_LENGTH:]
 
     return {
@@ -79,12 +76,33 @@ def parse_icmp(data):
     icmp_checksum = icmp_header[2]
     rest_of_icmp = data[8:]
 
+    if len(rest_of_icmp) < 20:
+        return {
+            "type": icmp_type,
+            "code": icmp_code,
+            "checksum": icmp_checksum,
+            "embedded_ip_header": None,
+            "udp_data": None,
+        }
+
     embedded_ip_header = struct.unpack("!BBHHHBBH4s4s", rest_of_icmp[:20])
     embedded_ip_id = embedded_ip_header[3]
     embedded_ip_src = socket.inet_ntoa(embedded_ip_header[8])
     embedded_ip_dst = socket.inet_ntoa(embedded_ip_header[9])
 
     udp_data_offset = 20
+    if len(rest_of_icmp) < udp_data_offset + 8:
+        return {
+            "type": icmp_type,
+            "code": icmp_code,
+            "checksum": icmp_checksum,
+            "id": embedded_ip_id,
+            "src_ip": embedded_ip_src,
+            "dst_ip": embedded_ip_dst,
+            "udp_data": None,
+            "src_port": None,
+        }
+
     udp_header = struct.unpack(
         "!HHHH", rest_of_icmp[udp_data_offset : udp_data_offset + 8]
     )
@@ -123,16 +141,20 @@ def analyze_traceroute(pcap_file):
         ip_data = packet_data[14:]
         ip_header = parse_ip_header(ip_data)
         proto = ip_header["protocol"]
+        if proto != 17 and proto != 1:
+            continue
+
         if proto == 17:
             udp_start = 14 + ip_header["ihl"]
             udp_data = parse_udp_packet(packet_data[udp_start:])
 
-            if udp_data["dst_port"] == 53:
+            if udp_data["src_port"] == 53 or udp_data["dst_port"] == 53:
                 continue
             else:
                 if source_ip is None:
                     source_ip = ip_header["src_ip"]
                 if dest_ip is None:
+                    print("----------dbug,", ip_header["protocol"])
                     dest_ip = ip_header["dst_ip"]
                 udp_packets.append(
                     {
@@ -150,25 +172,24 @@ def analyze_traceroute(pcap_file):
                 and ip_header["src_ip"] != dest_ip
             ):
                 intermediate_ips.add(ip_header["src_ip"])
-                routers[ip_header["src_ip"]] = {
-                    "rtt": [],
-                }
+            routers[ip_header["src_ip"]] = {
+                "rtt": [],
+                "avg": 0,
+                "std": 0,
+            }
 
-                icmp_packets.append(
-                    {
-                        "ip": ip_header["src_ip"],
-                        "src_port": icmp_data["src_port"],
-                        "id": icmp_data["id"],
-                        "time": ts_sec + ts_usec / 1e6,
-                    }
-                )
-        else:
-            continue
+            icmp_packets.append(
+                {
+                    "ip": ip_header["src_ip"],
+                    "src_port": icmp_data["src_port"],
+                    "id": icmp_data["id"],
+                    "time": ts_sec + ts_usec / 1e6,
+                }
+            )
 
         protocol_set.add(ip_header["protocol"])
 
         if ip_header["frag_offset"] > 0 or ip_header["mf_flag"] == 1:
-            print("test")
             fragment_offsets.append(ip_header["frag_offset"])
 
     for udp in udp_packets:
@@ -176,10 +197,10 @@ def analyze_traceroute(pcap_file):
             if (udp["id"] == icmp["id"] and udp["id"] != 0) or (
                 udp["src_port"] == icmp["src_port"] and udp["src_port"] != 0
             ):
-                if icmp["ip"] in routers:
+                icmp_ip = icmp["ip"]
+                if icmp_ip in routers:
                     diff = icmp["time"] - udp["time"]
-                    print("-------dbug diff: ", diff)
-                    routers[icmp["ip"]]["rtt"].append(diff)
+                    routers[icmp_ip]["rtt"].append(diff)
 
     print(f"The IP address of the source node: {source_ip}")
     print(f"The IP address of ultimate destination node: {dest_ip}")
@@ -192,24 +213,34 @@ def analyze_traceroute(pcap_file):
         print(f"{proto}: {'ICMP' if proto == 1 else 'UDP' if proto == 17 else 'Other'}")
 
     num_fragments = len(fragment_offsets)
-    last_fragment_offset = max(fragment_offsets) if fragment_offsets else 0
+    last_fragment_offset = max(fragment_offsets) if len(fragment_offsets) > 0 else 0
     print(
         f"\nThe number of fragments created from the original datagram is: {num_fragments}"
     )
     print(f"The offset of the last fragment is: {last_fragment_offset}")
 
     print("\nRTT statistics:")
-    for ip, router in routers.items():
-        print(router)
-        router["avg"] = statistics.mean(router["rtt"])
-        router["std"] = statistics.stdev(router["rtt"])
-    for router in routers:
-        print(
-            f"The avg RTT to {router["ip"]} is: {router["avg"]:.2f} ms, the s.d. is: {router["std"]:.2f} ms"
-        )
+    for key, router in routers.items():
+        if len(router["rtt"]) > 0:
+            router["avg"] = statistics.mean(router["rtt"])
+        if len(router["rtt"]) > 1:
+            router["std"] = statistics.pstdev(router["rtt"])
+        else:
+            router["std"] = 0
+
+    print("Ultimate Destination:")
+    print(
+        f"The avg RTT to {dest_ip} is: {routers[dest_ip]["avg"]:.2f} ms, the s.d. is: {routers[dest_ip]["std"]:.2f} ms"
+    )
+
+    print("Intermediate Routers:")
+    for key, router in routers.items():
+        if key != dest_ip:
+            print(
+                f"The avg RTT to {key} is: {router["avg"]:.2f} ms, the s.d. is: {router["std"]:.2f} ms"
+            )
 
 
-# Run the program
 if __name__ == "__main__":
     import sys
 
