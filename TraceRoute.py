@@ -2,8 +2,13 @@ import struct
 import socket
 import statistics
 
+def get_timestamp(ts_sec, ts_usec, orig_time):
+		seconds = ts_sec
+		microseconds = ts_usec
+		return  round(seconds + microseconds * 0.000001 - orig_time, 6)
 
 def parse_pcap(file_path):
+    pcap_start = None
     with open(file_path, "rb") as f:
         pcap_global_header = f.read(24)
 
@@ -13,11 +18,15 @@ def parse_pcap(file_path):
             if not packet_header:
                 break
 
-            ts_sec, ts_usec, incl_len, orig_len = struct.unpack("=IIII", packet_header)
+            ts_sec, ts_usec, incl_len, orig_len = struct.unpack("IIII", packet_header)
             packet_data = f.read(incl_len)
+
+            if pcap_start is None:
+                pcap_start = round(ts_sec + ts_usec * 0.000001, 6)
+                print(pcap_start)
             packets.append((ts_sec, ts_usec, packet_data))
 
-    return packets
+    return packets, pcap_start
 
 
 def parse_ip_header(data):
@@ -126,7 +135,7 @@ def parse_icmp(data):
 
 
 def analyze_traceroute(pcap_file):
-    packets = parse_pcap(pcap_file)
+    packets, pcap_start = parse_pcap(pcap_file)
 
     source_ip = None
     dest_ip = None
@@ -136,6 +145,8 @@ def analyze_traceroute(pcap_file):
     udp_packets = []
     icmp_packets = []
     routers = dict()
+
+    packets = sorted(packets, key=lambda pkt: (pkt[0]))
 
     for ts_sec, ts_usec, packet_data in packets:
         ip_data = packet_data[14:]
@@ -148,22 +159,25 @@ def analyze_traceroute(pcap_file):
             udp_start = 14 + ip_header["ihl"]
             udp_data = parse_udp_packet(packet_data[udp_start:])
 
+            if not 33434 <= udp_data["dst_port"] <= 33529:
+                continue
+
             if udp_data["src_port"] == 53 or udp_data["dst_port"] == 53:
                 continue
             else:
                 if source_ip is None:
                     source_ip = ip_header["src_ip"]
                 if dest_ip is None:
-                    print("----------dbug,", ip_header["protocol"])
                     dest_ip = ip_header["dst_ip"]
-                udp_packets.append(
-                    {
-                        "ip": ip_header["src_ip"],
-                        "src_port": udp_data["src_port"],
-                        "id": ip_header["id"],
-                        "time": ts_sec + ts_usec / 1e6,
-                    }
-                )
+                if ip_header["frag_offset"] == 0:
+                    udp_packets.append(
+                        {
+                            "ip": ip_header["src_ip"],
+                            "src_port": udp_data["src_port"],
+                            "id": ip_header["id"],
+                            "time": get_timestamp(ts_sec, ts_sec, pcap_start),
+                        }
+                    )
         elif proto == 1:
             icmp_data = parse_icmp(packet_data[14 + ip_header["ihl"] :])
             if (
@@ -183,7 +197,7 @@ def analyze_traceroute(pcap_file):
                     "ip": ip_header["src_ip"],
                     "src_port": icmp_data["src_port"],
                     "id": icmp_data["id"],
-                    "time": ts_sec + ts_usec / 1e6,
+                    "time": get_timestamp(ts_sec, ts_sec, pcap_start),
                 }
             )
 
@@ -199,6 +213,11 @@ def analyze_traceroute(pcap_file):
             ):
                 icmp_ip = icmp["ip"]
                 if icmp_ip in routers:
+                    if udp["src_port"] == 41555:
+                        print("------icmp", icmp["time"])
+                        print("------icmp", icmp["id"])
+                        print("------udp", udp["time"])
+                        print("------udp", udp["id"])
                     diff = icmp["time"] - udp["time"]
                     routers[icmp_ip]["rtt"].append(diff)
 
