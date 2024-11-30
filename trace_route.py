@@ -432,14 +432,14 @@ def analyze_traceroute(pcap_file, enable_output):
 
         print("Ultimate Destination:")
         print(
-            f"The avg RTT to {dest_ip} is: {routers[dest_ip]["avg"]:.2f} ms, the s.d. is: {routers[dest_ip]["std"]:.2f} ms"
+            f"The avg RTT to {dest_ip} is: {routers[dest_ip]['avg']:.2f} ms, the s.d. is: {routers[dest_ip]['std']:.2f} ms"
         )
 
         print("Intermediate Routers:")
         for key, router in routers.items():
             if key != dest_ip:
                 print(
-                    f"The avg RTT to {key} is: {router["avg"]:.2f} ms, the s.d. is: {router["std"]:.2f} ms"
+                    f"The avg RTT to {key} is: {router['avg']:.2f} ms, the s.d. is: {router['std']:.2f} ms"
                 )
     return ttl_rtt
 
