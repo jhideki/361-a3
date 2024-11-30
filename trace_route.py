@@ -7,35 +7,53 @@ def analyze_group_trace_files(file):
     packets, pcap_start, ts_factor = parse_pcap(file)
     packets = sorted(packets, key=lambda pkt: (pkt[0]))
     ttl_probe_counts = dict()
-
+    int_ips = []
     for ts, packet_data in packets:
         ip_data = packet_data[14:]
         ip_header = parse_ip_header(ip_data)
         proto = ip_header["protocol"]
 
-        if proto != 17:
+        if proto != 17 and proto != 1:
             continue
 
-        udp_start = 14 + ip_header["ihl"]
-        udp_data = parse_udp_packet(packet_data[udp_start:])
+        if proto == 17:
+            udp_start = 14 + ip_header["ihl"]
+            udp_data = parse_udp_packet(packet_data[udp_start:])
 
-        if not 33434 <= udp_data["dst_port"] <= 33529:
-            continue
+            if not 33434 <= udp_data["dst_port"] <= 33529:
+                continue
 
-        if udp_data["src_port"] == 53 or udp_data["dst_port"] == 53:
-            continue
-        else:
-            ttl = ip_header["ttl"]
-            if ttl in ttl_probe_counts:
-                ttl_probe_counts[ttl] += 1
+            if udp_data["src_port"] == 53 or udp_data["dst_port"] == 53:
+                continue
             else:
-                ttl_probe_counts[ttl] = 1
+                ttl = ip_header["ttl"]
+                if ttl in ttl_probe_counts:
+                    ttl_probe_counts[ttl] += 1
+                else:
+                    ttl_probe_counts[ttl] = 1
+        elif proto == 1:
+            start = 14 + ip_header["ihl"]
+            icmp_data = parse_icmp(packet_data[start:])
+            if icmp_data["type"] == 0 or icmp_data["type"] == 8:
+                ttl = ip_header["ttl"]
+                if ttl in ttl_probe_counts:
+                    ttl_probe_counts[ttl] += 1
+                else:
+                    ttl_probe_counts[ttl] = 1
+
+            int_ips.append({"src_ip": ip_header["src_ip"],
+                            "ts": ts})
 
     ttl_probe_counts = dict(sorted(ttl_probe_counts.items()))
     print(f"\nTrace file: {file}")
     print("{:<5} {:<10}".format("TTL", f"{file} Probes"))
     for ttl, count in ttl_probe_counts.items():
         print(f"{ttl:<5} {count:<10} ")
+    
+    int_ips = sorted(int_ips, key=lambda x: x["ts"])
+    for ip in int_ips:
+        print(ip)
+
 
 
 def parse_pcap(file_path):
@@ -442,6 +460,7 @@ if __name__ == "__main__":
             f"PcapTracesAssignment3/group2-trace{i}.pcap" for i in range(1, 6)
         ]
         # Part 2
+        '''
         for file in group1_trace_files:
             analyze_group_trace_files(file)
             ttl_rtt = analyze_traceroute(file, False)
@@ -449,3 +468,4 @@ if __name__ == "__main__":
             print("{:<5} {:<10}".format("TTL", "Avg RTT (ms)"))
             for ttl, rtt in ttl_rtt.items():
                 print(f"{ttl:<5} {statistics.mean(rtt):<10} ")
+        '''
